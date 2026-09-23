@@ -1,0 +1,19 @@
+# Binaries
+/cloudinary-cli
+/dist/
+
+# Go test & coverage artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# Go workspace (per-developer)
+go.work
+go.work.sum
+
+# macOS
+.DS_Store
+
+# OpenCode session state
+.omo/
