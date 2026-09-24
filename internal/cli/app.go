@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 
 	"github.com/anjuls/cloudinary-cli/internal/cfg"
@@ -22,6 +23,12 @@ import (
 // constructors, routes output through the injected writers, and maps
 // execution errors to stable exit codes.
 type App struct {
+	// Version is the release version reported by `cloudinary-cli --version`.
+	// It is overridable at build time via
+	// -ldflags "-X github.com/anjuls/cloudinary-cli/internal/cli.Version=vX.Y.Z"
+	// and defaults to "dev".
+	Version string
+
 	// Stdout receives regular command output such as help and results.
 	Stdout io.Writer
 
@@ -30,6 +37,10 @@ type App struct {
 
 	// Prompt asks the user for interactive input.
 	Prompt prompt.Prompter
+
+	// IsTerminal reports whether stdin is a TTY. When nil or false, the
+	// CLI skips interactive prompts and uses safe non-interactive defaults.
+	IsTerminal func() bool
 
 	// NewUploader builds an Uploader from the resolved configuration.
 	NewUploader func(cfg.Config) (upload.Uploader, error)
@@ -59,14 +70,22 @@ func (e *UsageError) Unwrap() error {
 	return e.Err
 }
 
+// Version is the default version string when App.Version is empty.
+// Release builds override it with -ldflags "-X github.com/anjuls/cloudinary-cli/internal/cli.Version=...".
+const Version = "dev"
+
 // NewApp returns an App wired to the production dependencies: the process
 // streams, the huh-backed prompter, the SDK uploader constructor, and the
 // gen2brain-backed encoders.
 func NewApp() *App {
 	a := &App{
-		Stdout:      os.Stdout,
-		Stderr:      os.Stderr,
-		Prompt:      prompt.New(),
+		Version: Version,
+		Stdout:  os.Stdout,
+		Stderr:  os.Stderr,
+		Prompt:  prompt.New(),
+		IsTerminal: func() bool {
+			return isatty.IsTerminal(os.Stdin.Fd()) || isatty.IsCygwinTerminal(os.Stdin.Fd())
+		},
 		NewUploader: upload.NewUploaderFromConfig,
 		NewEncoders: func() (codec.WebPEncoder, codec.AVIFEncoder) {
 			encoders := codec.NewEncoders()
@@ -108,8 +127,13 @@ func (a *App) Execute(ctx context.Context, args []string) int {
 // newRootCommand builds a fresh root command with the persistent --config
 // flag, the injected output writers, and the registered subcommands.
 func (a *App) newRootCommand() *cobra.Command {
+	version := a.Version
+	if version == "" {
+		version = Version
+	}
 	root := &cobra.Command{
 		Use:           "cloudinary-cli",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

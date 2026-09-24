@@ -176,3 +176,83 @@ func TestProcessRealCodecs_produces_decodable_variants(t *testing.T) {
 	assert.Equal(t, upload.VariantUploaded, result.Variants[0].Status)
 	assert.Equal(t, upload.VariantUploaded, result.Variants[1].Status)
 }
+
+func TestProcessRealCodecs_with_size_0_5(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := writePNG(t, tmpDir, "alpha.png", generateImage(64, 64))
+	encoders := codec.NewEncoders()
+	up := &realCodecUploader{t: t, w: 32, h: 32}
+	result := upload.Process(context.Background(), upload.Ports{WebP: encoders.WebP, AVIF: encoders.AVIF, Up: up}, upload.Options{WebPQuality: 80, AVIFQuality: 60, Size: 0.5}, srcPath)
+	require.Equal(t, upload.SourceOK, result.Status)
+	require.Len(t, result.Variants, 2)
+	assert.Equal(t, upload.VariantUploaded, result.Variants[0].Status)
+	assert.Equal(t, upload.VariantUploaded, result.Variants[1].Status)
+}
+
+func TestProcessRealCodecs_size_no_op(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := writePNG(t, tmpDir, "alpha.png", generateImage(16, 16))
+	encoders := codec.NewEncoders()
+
+	t.Run("size 1", func(t *testing.T) {
+		up := &realCodecUploader{t: t, w: 16, h: 16}
+		result := upload.Process(context.Background(), upload.Ports{WebP: encoders.WebP, AVIF: encoders.AVIF, Up: up}, upload.Options{WebPQuality: 80, AVIFQuality: 60, Size: 1.0}, srcPath)
+		require.Equal(t, upload.SourceOK, result.Status)
+	})
+
+	t.Run("size 0", func(t *testing.T) {
+		up := &realCodecUploader{t: t, w: 16, h: 16}
+		result := upload.Process(context.Background(), upload.Ports{WebP: encoders.WebP, AVIF: encoders.AVIF, Up: up}, upload.Options{WebPQuality: 80, AVIFQuality: 60, Size: 0.0}, srcPath)
+		require.Equal(t, upload.SourceOK, result.Status)
+	})
+
+	t.Run("size unset", func(t *testing.T) {
+		up := &realCodecUploader{t: t, w: 16, h: 16}
+		result := upload.Process(context.Background(), upload.Ports{WebP: encoders.WebP, AVIF: encoders.AVIF, Up: up}, upload.Options{WebPQuality: 80, AVIFQuality: 60}, srcPath)
+		require.Equal(t, upload.SourceOK, result.Status)
+	})
+}
+
+func TestProcess_formats_webp_only(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := writePNG(t, tmpDir, "hero.png", generateImage(64, 64))
+	up := &fakeUploader{responses: []upload.UploadResponse{
+		{PublicID: "hero-webp", SecureURL: "https://cdn.example/hero-webp"},
+	}}
+	result := upload.Process(context.Background(), upload.Ports{WebP: &fakeWebPEncoder{}, AVIF: &fakeAVIFEncoder{}, Up: up}, upload.Options{WebPQuality: 80, AVIFQuality: 60, Formats: []upload.VariantFormat{upload.FormatWebP}}, srcPath)
+	assert.Equal(t, upload.SourceOK, result.Status)
+	require.Len(t, result.Variants, 1)
+	assert.Equal(t, upload.FormatWebP, result.Variants[0].Format)
+	assert.Equal(t, upload.VariantUploaded, result.Variants[0].Status)
+	require.Len(t, up.uploads, 1)
+	assert.Equal(t, "hero-webp", up.uploads[0].Req.PublicID)
+}
+
+func TestProcess_formats_avif_only(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := writePNG(t, tmpDir, "hero.png", generateImage(64, 64))
+	up := &fakeUploader{responses: []upload.UploadResponse{
+		{PublicID: "hero-avif", SecureURL: "https://cdn.example/hero-avif"},
+	}}
+	result := upload.Process(context.Background(), upload.Ports{WebP: &fakeWebPEncoder{}, AVIF: &fakeAVIFEncoder{}, Up: up}, upload.Options{WebPQuality: 80, AVIFQuality: 60, Formats: []upload.VariantFormat{upload.FormatAVIF}}, srcPath)
+	assert.Equal(t, upload.SourceOK, result.Status)
+	require.Len(t, result.Variants, 1)
+	assert.Equal(t, upload.FormatAVIF, result.Variants[0].Format)
+	assert.Equal(t, upload.VariantUploaded, result.Variants[0].Status)
+	require.Len(t, up.uploads, 1)
+	assert.Equal(t, "hero-avif", up.uploads[0].Req.PublicID)
+}
+
+func TestProcess_formats_avif_only_upload_failure(t *testing.T) {
+	tmpDir := t.TempDir()
+	srcPath := writePNG(t, tmpDir, "hero.png", generateImage(64, 64))
+	up := &fakeUploader{err: errors.New("avif upload boom"), errIndex: 0}
+	result := upload.Process(context.Background(), upload.Ports{WebP: &fakeWebPEncoder{}, AVIF: &fakeAVIFEncoder{}, Up: up}, upload.Options{WebPQuality: 80, AVIFQuality: 60, Formats: []upload.VariantFormat{upload.FormatAVIF}}, srcPath)
+	assert.Equal(t, upload.SourceError, result.Status)
+	require.Len(t, result.Variants, 1)
+	assert.Equal(t, upload.FormatAVIF, result.Variants[0].Format)
+	assert.Equal(t, upload.VariantError, result.Variants[0].Status)
+	assert.Equal(t, upload.StageUpload, result.Variants[0].Stage)
+	assert.Equal(t, "avif upload boom", result.Variants[0].Error)
+	require.Len(t, up.uploads, 1)
+}

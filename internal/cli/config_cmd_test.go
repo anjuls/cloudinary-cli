@@ -39,6 +39,10 @@ func (r *recordingPrompter) Ask(_ context.Context, title string, fields []prompt
 	return r.values, nil
 }
 
+func (r *recordingPrompter) Select(context.Context, string, []prompt.Choice, string) (string, error) {
+	return "", errors.New("prompt: unexpected Select call in test")
+}
+
 func Test_config_init_writes_valid_config(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")

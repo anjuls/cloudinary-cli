@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -37,24 +38,72 @@ func newUploadCmd(app *App) *cobra.Command {
 		},
 	}
 
-	cmd.Flags().Int("quality", 80, "encoding quality (1-100)")
+	cmd.Flags().Float64("quality", 0.5, "encoding quality (0,1]; 0.5 = medium")
+	cmd.Flags().Float64("size", 1.0, "linear scale for width and height, (0,1]; 1 = no change")
 	cmd.Flags().Bool("overwrite", false, "overwrite existing assets")
 	cmd.Flags().String("folder-mode", "dynamic", "folder mode: dynamic|fixed")
 	cmd.Flags().String("folder", "", "folder path prefix")
 	cmd.Flags().Bool("recursive", false, "recursively upload directory contents")
 	cmd.Flags().String("output", "text", "output format: text|json")
+	cmd.Flags().String("format", "", "output formats: webp|avif|both (default both; prompts when interactive)")
 
 	return cmd
 }
 
+func parseFormatFlag(s string) ([]upload.VariantFormat, error) {
+	switch s {
+	case "webp":
+		return []upload.VariantFormat{upload.FormatWebP}, nil
+	case "avif":
+		return []upload.VariantFormat{upload.FormatAVIF}, nil
+	case "both":
+		return []upload.VariantFormat{upload.FormatWebP, upload.FormatAVIF}, nil
+	default:
+		return nil, fmt.Errorf("invalid format %q, expected webp, avif, or both", s)
+	}
+}
+
+func resolveFormats(ctx context.Context, app *App, flagValue string) ([]upload.VariantFormat, error) {
+	if flagValue != "" {
+		return parseFormatFlag(flagValue)
+	}
+
+	if app.IsTerminal == nil || !app.IsTerminal() {
+		return nil, nil
+	}
+
+	choices := []prompt.Choice{
+		{Label: "WebP", Value: "webp"},
+		{Label: "AVIF", Value: "avif"},
+		{Label: "Both", Value: "both"},
+	}
+	selected, err := app.Prompt.Select(ctx, "Select output format", choices, "both")
+	if err != nil {
+		return nil, fmt.Errorf("prompt: %w", err)
+	}
+	return parseFormatFlag(selected)
+}
+
 func runUpload(ctx context.Context, app *App, cmd *cobra.Command, arg string) error {
-	quality, err := cmd.Flags().GetInt("quality")
+	quality, err := cmd.Flags().GetFloat64("quality")
 	if err != nil {
 		return err
 	}
-	webpQ, avifQ, err := codec.PairFromBaseQuality(quality)
+	if quality <= 0 || quality > 1 {
+		return &UsageError{Err: fmt.Errorf("invalid quality %v: must be in (0,1], e.g. 0.5 for 50%%", quality)}
+	}
+	baseQ := int(quality*100 + 0.5) // clamped by range above to [1,100]
+	webpQ, avifQ, err := codec.PairFromBaseQuality(baseQ)
 	if err != nil {
 		return &UsageError{Err: fmt.Errorf("invalid quality: %w", err)}
+	}
+
+	size, err := cmd.Flags().GetFloat64("size")
+	if err != nil {
+		return err
+	}
+	if size <= 0 || size > 1 {
+		return &UsageError{Err: fmt.Errorf("invalid size %v: must be in (0,1], e.g. 0.5 for half dimensions", size)}
 	}
 
 	overwrite, _ := cmd.Flags().GetBool("overwrite")
@@ -70,6 +119,14 @@ func runUpload(ctx context.Context, app *App, cmd *cobra.Command, arg string) er
 	output, _ := cmd.Flags().GetString("output")
 	if output != "text" && output != "json" {
 		return &UsageError{Err: fmt.Errorf("invalid output %q, expected text or json", output)}
+	}
+
+	formatFlag, _ := cmd.Flags().GetString("format")
+	if formatFlag != "" {
+		formatFlag = strings.ToLower(formatFlag)
+		if _, err := parseFormatFlag(formatFlag); err != nil {
+			return &UsageError{Err: err}
+		}
 	}
 
 	flag, err := configPathFlag(cmd)
@@ -121,6 +178,11 @@ func runUpload(ctx context.Context, app *App, cmd *cobra.Command, arg string) er
 		}
 	}
 
+	formats, err := resolveFormats(ctx, app, formatFlag)
+	if err != nil {
+		return err
+	}
+
 	up, err := app.NewUploader(c)
 	if err != nil {
 		return fmt.Errorf("create uploader: %w", err)
@@ -128,7 +190,7 @@ func runUpload(ctx context.Context, app *App, cmd *cobra.Command, arg string) er
 
 	webpEnc, avifEnc := app.NewEncoders()
 	ports := upload.Ports{WebP: webpEnc, AVIF: avifEnc, Up: up}
-	baseOpts := upload.Options{WebPQuality: webpQ, AVIFQuality: avifQ, Overwrite: overwrite}
+	baseOpts := upload.Options{WebPQuality: webpQ, AVIFQuality: avifQ, Overwrite: overwrite, Formats: formats, Size: size}
 
 	candidates, results, err := buildSources(arg, recursive)
 	if err != nil {

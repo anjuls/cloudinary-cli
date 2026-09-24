@@ -24,12 +24,26 @@ type Field struct {
 	Secret bool
 }
 
+// Choice describes one option in a single-select prompt.
+type Choice struct {
+	// Label is the text shown to the user.
+	Label string
+
+	// Value is the string returned when this choice is selected.
+	Value string
+}
+
 // Prompter asks the user for ordered input values on the terminal.
 type Prompter interface {
 	// Ask presents the fields as a single form, in order, under the given
 	// title, and returns the entered values in the same order. Secret
 	// fields are masked; their values are never echoed to the terminal.
 	Ask(ctx context.Context, title string, fields []Field) ([]string, error)
+
+	// Select presents a single-select list of choices under the given title
+	// and returns the Value of the selected choice. If defaultValue matches
+	// one of the choice Values, that choice is pre-selected.
+	Select(ctx context.Context, title string, choices []Choice, defaultValue string) (string, error)
 }
 
 // huhPrompter is the huh-backed Prompter implementation.
@@ -69,6 +83,40 @@ func (huhPrompter) Ask(ctx context.Context, title string, fields []Field) ([]str
 		return nil, wrapErr(err)
 	}
 	return values, nil
+}
+
+// Select implements Prompter.
+func (huhPrompter) Select(ctx context.Context, title string, choices []Choice, defaultValue string) (string, error) {
+	if len(choices) == 0 {
+		return "", errors.New("prompt: no choices provided")
+	}
+
+	options := make([]huh.Option[string], len(choices))
+	for i, c := range choices {
+		options[i] = huh.NewOption(c.Label, c.Value)
+	}
+
+	var selected string
+	for _, c := range choices {
+		if c.Value == defaultValue {
+			selected = defaultValue
+			break
+		}
+	}
+
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewSelect[string]().
+				Title(title).
+				Options(options...).
+				Value(&selected),
+		).Title(title),
+	)
+
+	if err := form.RunWithContext(ctx); err != nil {
+		return "", wrapErr(err)
+	}
+	return selected, nil
 }
 
 // wrapErr adds prompt-package context to a huh error. It is a named seam so

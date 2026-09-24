@@ -27,6 +27,10 @@ func (fakePrompter) Ask(context.Context, string, []prompt.Field) ([]string, erro
 	return nil, errors.New("prompt: unexpected call in test")
 }
 
+func (fakePrompter) Select(context.Context, string, []prompt.Choice, string) (string, error) {
+	return "", errors.New("prompt: unexpected Select call in test")
+}
+
 // fakeUploader is an Uploader stand-in that fails loudly if a test invokes it.
 type fakeUploader struct{}
 
@@ -51,9 +55,10 @@ func (fakeAVIFEncoder) EncodeAVIF(io.Writer, image.Image, codec.Quality) error {
 // newTestApp returns an App wired to fail-loudly fakes and the given writers.
 func newTestApp(stdout, stderr io.Writer) *App {
 	return &App{
-		Stdout: stdout,
-		Stderr: stderr,
-		Prompt: fakePrompter{},
+		Stdout:     stdout,
+		Stderr:     stderr,
+		Prompt:     fakePrompter{},
+		IsTerminal: func() bool { return false },
 		NewUploader: func(cfg.Config) (upload.Uploader, error) {
 			return fakeUploader{}, nil
 		},
@@ -259,11 +264,34 @@ func Test_NewApp_wires_default_dependencies(t *testing.T) {
 
 	require.Equal(t, os.Stdout, app.Stdout)
 	require.Equal(t, os.Stderr, app.Stderr)
+	require.Equal(t, Version, app.Version)
 	require.NotNil(t, app.Prompt)
 	require.NotNil(t, app.NewUploader)
 	webp, avif := app.NewEncoders()
 	require.NotNil(t, webp)
 	require.NotNil(t, avif)
+}
+
+func Test_version_flag_prints_app_version(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := newTestApp(&stdout, &stderr)
+	app.Version = "v9.9.9"
+
+	code := app.Execute(context.Background(), []string{"--version"})
+
+	require.Equal(t, 0, code)
+	require.Contains(t, stdout.String(), "cloudinary-cli version v9.9.9")
+	require.Empty(t, stderr.String())
+}
+
+func Test_version_flag_defaults_to_dev_when_unset(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	app := newTestApp(&stdout, &stderr)
+
+	code := app.Execute(context.Background(), []string{"--version"})
+
+	require.Equal(t, 0, code)
+	require.Contains(t, stdout.String(), "cloudinary-cli version dev")
 }
 
 func Test_UsageError_wraps_inner_error(t *testing.T) {

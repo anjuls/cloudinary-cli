@@ -132,12 +132,14 @@ cloudinary-cli upload <path> [flags]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--quality <1-100>` | `80` | Base encoding quality. WebP uses this value directly; AVIF uses `max(1, round(quality × 0.75))` (so the default 80 → WebP 80, AVIF 60). |
+| `--quality <0-1]>` | `0.5` | Encoding quality as a fraction. WebP uses `round(quality × 100)`; AVIF uses `max(1, round(webpQuality × 0.75))` (so the default 0.5 → WebP 50, AVIF 38). |
+| `--size <0-1]>` | `1` | Linear scale for width and height before encoding. `1` = no change; `0.5` = half dimensions per side. |
 | `--overwrite` | off | Allow replacing an existing Cloudinary asset with the same public ID. Without it, a name collision fails that source. |
 | `--folder-mode <dynamic\|fixed>` | `dynamic` | How assets are placed in folders (see below). |
 | `--folder <path>` | — | Folder path. Required when `--folder-mode fixed`. In dynamic mode it acts as a prefix for the derived structure. |
 | `--recursive` | off | Walk subdirectories. Without it, only the top level of a directory is considered. |
 | `--output <text\|json>` | `text` | Report format. |
+| `--format <webp\|avif\|both>` | `both` (prompts when interactive) | Output format(s) to encode and upload. When stdin is a TTY and the flag is omitted, an interactive prompt asks which format to use. In non-interactive environments the default is `both`. |
 | `--config <file>` | platform default | Alternate config file (global flag, works on every command). |
 
 #### Supported input formats
@@ -240,9 +242,9 @@ Field notes:
 
 #### Failure semantics
 
-- Both variants are encoded to temporary files **before** any network call. If either encode fails, nothing is uploaded for that source.
+- Selected variants are encoded to temporary files **before** any network call. If either encode fails, nothing is uploaded for that source.
 - WebP uploads first, then AVIF. If the WebP upload fails, the AVIF upload is not attempted for that source.
-- If WebP succeeded but AVIF fails, the source is reported as `partial` — the already-uploaded WebP asset is left in place (no automatic cleanup in this version).
+- If WebP succeeded but AVIF fails, the source is reported as `partial` — the already-uploaded WebP asset is left in place (no automatic cleanup in this version). `partial` is only possible when both formats are selected; with a single format, a failure is reported as `error`.
 - Each source is processed independently; one bad file does not stop the rest of the batch.
 - Temporary encode files are always removed, including on failure.
 
@@ -250,7 +252,13 @@ Field notes:
 
 ```bash
 # Higher quality, overwrite existing assets, machine-readable report
-cloudinary-cli upload ./img --quality 90 --overwrite --output json
+cloudinary-cli upload ./img --quality 0.9 --overwrite --output json
+
+# Resize to 50% and lower quality
+cloudinary-cli upload ./img --size 0.5 --quality 0.4
+
+# Upload only AVIF variants
+cloudinary-cli upload ./img --format avif
 
 # Fixed folder for a flat batch
 cloudinary-cli upload ./press-kit --folder-mode fixed --folder press
@@ -280,9 +288,10 @@ cloudinary-cli completion zsh
 For each source file:
 
 1. **Decode** — the file is read and validated as JPEG or PNG (detected by magic bytes).
-2. **Encode locally** — WebP and AVIF are written to temporary files using pure-Go encoders (`gen2brain/webp`, `gen2brain/avif`). Lossy only; WebP uses the base quality directly, AVIF uses `max(1, round(q × 0.75))`. Encoder settings: WebP `Method: 4`, AVIF `Speed: 6`.
-3. **Upload** — both files are uploaded via the official Cloudinary Go SDK as signed `multipart` requests to `resource_type=image`, with the folder directive and overwrite policy applied.
-4. **Report** — results are collected and rendered as text or JSON; `SecureURL` from Cloudinary is passed through untouched.
+2. **Resize (optional)** — if `--size` is set to a value other than `1`, the image is linearly scaled on both axes using Catmull-Rom resampling before encoding.
+3. **Encode locally** — WebP and AVIF are written to temporary files using pure-Go encoders (`gen2brain/webp`, `gen2brain/avif`). Lossy only; WebP uses the rounded base quality directly, AVIF uses `max(1, round(q × 0.75))`. Encoder settings: WebP `Method: 4`, AVIF `Speed: 6`.
+4. **Upload** — both files are uploaded via the official Cloudinary Go SDK as signed `multipart` requests to `resource_type=image`, with the folder directive and overwrite policy applied.
+5. **Report** — results are collected and rendered as text or JSON; `SecureURL` from Cloudinary is passed through untouched.
 
 There is no concurrency in this version: files are processed sequentially in sorted order, which keeps output deterministic and rate limits predictable.
 
@@ -290,7 +299,7 @@ There is no concurrency in this version: files are processed sequentially in sor
 
 - **No delivery-time transformations** — optimization is done once at upload, not on every request. Direct `secure_url` values are reported as stored.
 - **No Admin API** — only the upload endpoint is used; no listing or deletion of remote assets.
-- **No resize/crop** — dimensions are preserved; only the container format and quality change.
+- **Optional local resize** — `--size` scales dimensions before encoding; no Cloudinary-side transforms are applied.
 - **No keychain integration** — credentials live in the config file (0600) or environment variables.
 - **Secrets stay off the command line** — `config set api-secret` prompts instead of accepting an argument.
 - **No `.env` loading** — environment variables must be exported by the shell or CI system.

@@ -49,6 +49,43 @@ func TestField_marks_only_secret_fields(t *testing.T) {
 	}
 }
 
+// Given the zero value of Choice
+// When its fields are read
+// Then Label and Value are empty (usable as a zero value).
+func TestChoice_zero_value(t *testing.T) {
+	var c Choice
+	if c.Label != "" {
+		t.Errorf("zero Choice.Label = %q, want empty", c.Label)
+	}
+	if c.Value != "" {
+		t.Errorf("zero Choice.Value = %q, want empty", c.Value)
+	}
+}
+
+// Given a Prompter and an empty choices list
+// When Select is called
+// Then it fails fast without opening a terminal form and returns an error.
+func TestSelect_fails_fast_when_no_choices(t *testing.T) {
+	tests := []struct {
+		name    string
+		choices []Choice
+	}{
+		{"nil choices", nil},
+		{"empty choices", []Choice{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			value, err := New().Select(context.Background(), "title", tt.choices, "")
+			if err == nil {
+				t.Fatal("Select() err = nil, want error for empty choices")
+			}
+			if value != "" {
+				t.Errorf("Select() value = %q, want empty on error", value)
+			}
+		})
+	}
+}
+
 // Given a Prompter and an empty field list
 // When Ask is called
 // Then it fails fast without opening a terminal form and returns no values.

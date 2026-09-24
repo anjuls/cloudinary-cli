@@ -22,9 +22,12 @@ type Options struct {
 	AVIFQuality codec.Quality
 	Folder      FolderDirective
 	Overwrite   bool
+	Formats     []VariantFormat
+	Size        float64
 }
 
-// Process encodes a source image to WebP and AVIF and uploads both variants.
+// Process encodes a source image to the selected formats and uploads them.
+// When opts.Formats is nil or empty, both WebP and AVIF are produced.
 func Process(ctx context.Context, ports Ports, opts Options, sourcePath string) SourceResult {
 	result := SourceResult{
 		Source:       sourcePath,
@@ -38,64 +41,135 @@ func Process(ctx context.Context, ports Ports, opts Options, sourcePath string) 
 		return result
 	}
 
+	if opts.Size > 0 && opts.Size != 1 {
+		img = codec.Resize(img, opts.Size)
+	}
+
+	formats := opts.Formats
+	if len(formats) == 0 {
+		formats = []VariantFormat{FormatWebP, FormatAVIF}
+	}
+
+	wantWebP := false
+	wantAVIF := false
+	for _, f := range formats {
+		if f == FormatWebP {
+			wantWebP = true
+		}
+		if f == FormatAVIF {
+			wantAVIF = true
+		}
+	}
+
 	var webpPath, avifPath string
 	defer func() {
 		removeTemp(webpPath)
 		removeTemp(avifPath)
 	}()
 
-	webpPath, err = encodeWebPToTemp(ports.WebP, img, opts.WebPQuality)
-	if err != nil {
-		result.Variants = []VariantResult{
-			{Format: FormatWebP, Status: VariantError, Stage: StageEncode, Error: err.Error()},
-			{Format: FormatAVIF, Status: VariantSkipped, Reason: "pair aborted: webp encode failed"},
+	if wantWebP {
+		webpPath, err = encodeWebPToTemp(ports.WebP, img, opts.WebPQuality)
+		if err != nil {
+			if wantAVIF {
+				result.Variants = []VariantResult{
+					{Format: FormatWebP, Status: VariantError, Stage: StageEncode, Error: err.Error()},
+					{Format: FormatAVIF, Status: VariantSkipped, Reason: "pair aborted: webp encode failed"},
+				}
+			} else {
+				result.Variants = []VariantResult{
+					{Format: FormatWebP, Status: VariantError, Stage: StageEncode, Error: err.Error()},
+				}
+			}
+			return result
+		}
+	}
+
+	if wantAVIF {
+		avifPath, err = encodeAVIFToTemp(ports.AVIF, img, opts.AVIFQuality)
+		if err != nil {
+			if wantWebP {
+				result.Variants = []VariantResult{
+					{Format: FormatWebP, Status: VariantSkipped, Reason: "pair aborted: avif encode failed"},
+					{Format: FormatAVIF, Status: VariantError, Stage: StageEncode, Error: err.Error()},
+				}
+			} else {
+				result.Variants = []VariantResult{
+					{Format: FormatAVIF, Status: VariantError, Stage: StageEncode, Error: err.Error()},
+				}
+			}
+			return result
+		}
+	}
+
+	var webpRes UploadResponse
+	if wantWebP {
+		webpReq := UploadRequest{
+			PublicID:  result.PublicIDBase + "-webp",
+			Folder:    opts.Folder,
+			Overwrite: opts.Overwrite,
+		}
+		var err error
+		webpRes, err = ports.Up.Upload(ctx, webpPath, webpReq)
+		if err != nil {
+			if wantAVIF {
+				result.Variants = []VariantResult{
+					{Format: FormatWebP, Status: VariantError, Stage: StageUpload, Error: err.Error()},
+					{Format: FormatAVIF, Status: VariantSkipped, Reason: "pair aborted: webp upload failed"},
+				}
+			} else {
+				result.Variants = []VariantResult{
+					{Format: FormatWebP, Status: VariantError, Stage: StageUpload, Error: err.Error()},
+				}
+			}
+			return result
+		}
+	}
+
+	if wantAVIF {
+		avifReq := UploadRequest{
+			PublicID:  result.PublicIDBase + "-avif",
+			Folder:    opts.Folder,
+			Overwrite: opts.Overwrite,
+		}
+		avifRes, err := ports.Up.Upload(ctx, avifPath, avifReq)
+		if err != nil {
+			if wantWebP {
+				result.Status = SourcePartial
+				result.Variants = []VariantResult{
+					{Format: FormatWebP, Status: VariantUploaded, PublicID: webpRes.PublicID, SecureURL: webpRes.SecureURL},
+					{Format: FormatAVIF, Status: VariantError, Stage: StageUpload, Error: err.Error()},
+				}
+			} else {
+				result.Variants = []VariantResult{
+					{Format: FormatAVIF, Status: VariantError, Stage: StageUpload, Error: err.Error()},
+				}
+			}
+			return result
+		}
+
+		if wantWebP {
+			result.Status = SourceOK
+			result.Variants = []VariantResult{
+				{Format: FormatWebP, Status: VariantUploaded, PublicID: webpRes.PublicID, SecureURL: webpRes.SecureURL},
+				{Format: FormatAVIF, Status: VariantUploaded, PublicID: avifRes.PublicID, SecureURL: avifRes.SecureURL},
+			}
+		} else {
+			result.Status = SourceOK
+			result.Variants = []VariantResult{
+				{Format: FormatAVIF, Status: VariantUploaded, PublicID: avifRes.PublicID, SecureURL: avifRes.SecureURL},
+			}
 		}
 		return result
 	}
 
-	avifPath, err = encodeAVIFToTemp(ports.AVIF, img, opts.AVIFQuality)
-	if err != nil {
-		result.Variants = []VariantResult{
-			{Format: FormatWebP, Status: VariantSkipped, Reason: "pair aborted: avif encode failed"},
-			{Format: FormatAVIF, Status: VariantError, Stage: StageEncode, Error: err.Error()},
-		}
-		return result
-	}
-
-	webpReq := UploadRequest{
-		PublicID:  result.PublicIDBase + "-webp",
-		Folder:    opts.Folder,
-		Overwrite: opts.Overwrite,
-	}
-	webpRes, err := ports.Up.Upload(ctx, webpPath, webpReq)
-	if err != nil {
-		result.Variants = []VariantResult{
-			{Format: FormatWebP, Status: VariantError, Stage: StageUpload, Error: err.Error()},
-			{Format: FormatAVIF, Status: VariantSkipped, Reason: "pair aborted: webp upload failed"},
-		}
-		return result
-	}
-
-	avifReq := UploadRequest{
-		PublicID:  result.PublicIDBase + "-avif",
-		Folder:    opts.Folder,
-		Overwrite: opts.Overwrite,
-	}
-	avifRes, err := ports.Up.Upload(ctx, avifPath, avifReq)
-	if err != nil {
-		result.Status = SourcePartial
+	if wantWebP {
+		result.Status = SourceOK
 		result.Variants = []VariantResult{
 			{Format: FormatWebP, Status: VariantUploaded, PublicID: webpRes.PublicID, SecureURL: webpRes.SecureURL},
-			{Format: FormatAVIF, Status: VariantError, Stage: StageUpload, Error: err.Error()},
 		}
 		return result
 	}
 
-	result.Status = SourceOK
-	result.Variants = []VariantResult{
-		{Format: FormatWebP, Status: VariantUploaded, PublicID: webpRes.PublicID, SecureURL: webpRes.SecureURL},
-		{Format: FormatAVIF, Status: VariantUploaded, PublicID: avifRes.PublicID, SecureURL: avifRes.SecureURL},
-	}
 	return result
 }
 

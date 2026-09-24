@@ -58,13 +58,24 @@ func (r *recordingAVIFEncoder) EncodeAVIF(w io.Writer, _ image.Image, q codec.Qu
 }
 
 type scriptedPrompter struct {
-	values []string
-	fields []prompt.Field
+	values        []string
+	fields        []prompt.Field
+	selectValue   string
+	selectTitle   string
+	selectChoices []prompt.Choice
+	selectDefault string
 }
 
 func (s *scriptedPrompter) Ask(_ context.Context, _ string, fields []prompt.Field) ([]string, error) {
 	s.fields = fields
 	return s.values, nil
+}
+
+func (s *scriptedPrompter) Select(_ context.Context, title string, choices []prompt.Choice, defaultValue string) (string, error) {
+	s.selectTitle = title
+	s.selectChoices = choices
+	s.selectDefault = defaultValue
+	return s.selectValue, nil
 }
 
 // --- helpers ---
@@ -96,6 +107,7 @@ func newUploadTestApp(stdout, stderr io.Writer, uploader upload.Uploader, encode
 		Stdout:      stdout,
 		Stderr:      stderr,
 		Prompt:      prompter,
+		IsTerminal:  func() bool { return false },
 		NewUploader: func(cfg.Config) (upload.Uploader, error) { return uploader, nil },
 		NewEncoders: encoders,
 	}
@@ -143,7 +155,7 @@ func Test_upload_quality_90(t *testing.T) {
 		return webpEnc, avifEnc
 	}, nil)
 
-	code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--quality", "90", dir})
+	code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--quality", "0.9", dir})
 
 	require.Equal(t, 0, code)
 	require.Len(t, webpEnc.qualities, 1)
@@ -160,7 +172,8 @@ func Test_upload_quality_invalid(t *testing.T) {
 		quality string
 	}{
 		{"quality 0", "0"},
-		{"quality 101", "101"},
+		{"quality -1", "-1"},
+		{"quality 1.5", "1.5"},
 	}
 
 	for _, tt := range tests {
@@ -468,6 +481,202 @@ func Test_upload_args_count(t *testing.T) {
 			require.Equal(t, 2, code)
 		})
 	}
+}
+
+func Test_upload_format_flag(t *testing.T) {
+	configPath := writeConfig(t, cfg.Config{CloudName: "demo", APIKey: "key", APISecret: "secret"})
+
+	t.Run("webp only", func(t *testing.T) {
+		dir := t.TempDir()
+		writePNG(t, dir, "a.png")
+		var stdout, stderr bytes.Buffer
+		uploader := &recordingUploader{}
+		webpEnc := &recordingWebPEncoder{}
+		avifEnc := &recordingAVIFEncoder{}
+		app := newUploadTestApp(&stdout, &stderr, uploader, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+			return webpEnc, avifEnc
+		}, nil)
+
+		code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--format", "webp", dir})
+
+		require.Equal(t, 0, code)
+		require.Len(t, uploader.uploads, 1)
+		require.Equal(t, "a-webp", uploader.uploads[0].Req.PublicID)
+		require.Len(t, webpEnc.qualities, 1)
+		require.Len(t, avifEnc.qualities, 0)
+		require.Contains(t, stdout.String(), "1 variants uploaded")
+	})
+
+	t.Run("avif only", func(t *testing.T) {
+		dir := t.TempDir()
+		writePNG(t, dir, "a.png")
+		var stdout, stderr bytes.Buffer
+		uploader := &recordingUploader{}
+		webpEnc := &recordingWebPEncoder{}
+		avifEnc := &recordingAVIFEncoder{}
+		app := newUploadTestApp(&stdout, &stderr, uploader, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+			return webpEnc, avifEnc
+		}, nil)
+
+		code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--format", "avif", dir})
+
+		require.Equal(t, 0, code)
+		require.Len(t, uploader.uploads, 1)
+		require.Equal(t, "a-avif", uploader.uploads[0].Req.PublicID)
+		require.Len(t, webpEnc.qualities, 0)
+		require.Len(t, avifEnc.qualities, 1)
+		require.Contains(t, stdout.String(), "1 variants uploaded")
+	})
+
+	t.Run("both explicit", func(t *testing.T) {
+		dir := t.TempDir()
+		writePNG(t, dir, "a.png")
+		var stdout, stderr bytes.Buffer
+		uploader := &recordingUploader{}
+		app := newUploadTestApp(&stdout, &stderr, uploader, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+			return &recordingWebPEncoder{}, &recordingAVIFEncoder{}
+		}, nil)
+
+		code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--format", "both", dir})
+
+		require.Equal(t, 0, code)
+		require.Len(t, uploader.uploads, 2)
+		require.Equal(t, "a-webp", uploader.uploads[0].Req.PublicID)
+		require.Equal(t, "a-avif", uploader.uploads[1].Req.PublicID)
+		require.Contains(t, stdout.String(), "2 variants uploaded")
+	})
+
+	t.Run("invalid format", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		app := newUploadTestApp(&stdout, &stderr, &recordingUploader{}, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+			return &recordingWebPEncoder{}, &recordingAVIFEncoder{}
+		}, nil)
+
+		code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--format", "gif", t.TempDir()})
+
+		require.Equal(t, 2, code)
+	})
+
+	t.Run("interactive prompt selects webp", func(t *testing.T) {
+		dir := t.TempDir()
+		writePNG(t, dir, "a.png")
+		prompter := &scriptedPrompter{selectValue: "webp"}
+		var stdout, stderr bytes.Buffer
+		uploader := &recordingUploader{}
+		app := newUploadTestApp(&stdout, &stderr, uploader, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+			return &recordingWebPEncoder{}, &recordingAVIFEncoder{}
+		}, prompter)
+		app.IsTerminal = func() bool { return true }
+
+		code := app.Execute(context.Background(), []string{"upload", "--config", configPath, dir})
+
+		require.Equal(t, 0, code)
+		require.Len(t, uploader.uploads, 1)
+		require.Equal(t, "a-webp", uploader.uploads[0].Req.PublicID)
+		require.Contains(t, prompter.selectTitle, "format")
+		require.Len(t, prompter.selectChoices, 3)
+		var hasWebP, hasAVIF, hasBoth bool
+		for _, c := range prompter.selectChoices {
+			switch c.Value {
+			case "webp":
+				hasWebP = true
+			case "avif":
+				hasAVIF = true
+			case "both":
+				hasBoth = true
+			}
+		}
+		require.True(t, hasWebP)
+		require.True(t, hasAVIF)
+		require.True(t, hasBoth)
+	})
+}
+
+func Test_upload_quality_0_4(t *testing.T) {
+	dir := t.TempDir()
+	writePNG(t, dir, "a.png")
+	configPath := writeConfig(t, cfg.Config{CloudName: "demo", APIKey: "key", APISecret: "secret"})
+
+	var stdout, stderr bytes.Buffer
+	webpEnc := &recordingWebPEncoder{}
+	avifEnc := &recordingAVIFEncoder{}
+	app := newUploadTestApp(&stdout, &stderr, &recordingUploader{}, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+		return webpEnc, avifEnc
+	}, nil)
+
+	code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--quality", "0.4", dir})
+
+	require.Equal(t, 0, code)
+	require.Len(t, webpEnc.qualities, 1)
+	require.Len(t, avifEnc.qualities, 1)
+	require.Equal(t, codec.Quality(40), webpEnc.qualities[0])
+	require.Equal(t, codec.Quality(30), avifEnc.qualities[0])
+}
+
+func Test_upload_default_quality(t *testing.T) {
+	dir := t.TempDir()
+	writePNG(t, dir, "a.png")
+	configPath := writeConfig(t, cfg.Config{CloudName: "demo", APIKey: "key", APISecret: "secret"})
+
+	var stdout, stderr bytes.Buffer
+	webpEnc := &recordingWebPEncoder{}
+	avifEnc := &recordingAVIFEncoder{}
+	app := newUploadTestApp(&stdout, &stderr, &recordingUploader{}, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+		return webpEnc, avifEnc
+	}, nil)
+
+	code := app.Execute(context.Background(), []string{"upload", "--config", configPath, dir})
+
+	require.Equal(t, 0, code)
+	require.Len(t, webpEnc.qualities, 1)
+	require.Len(t, avifEnc.qualities, 1)
+	require.Equal(t, codec.Quality(50), webpEnc.qualities[0])
+	require.Equal(t, codec.Quality(38), avifEnc.qualities[0])
+}
+
+func Test_upload_size_invalid(t *testing.T) {
+	configPath := writeConfig(t, cfg.Config{CloudName: "demo", APIKey: "key", APISecret: "secret"})
+
+	tests := []struct {
+		name string
+		size string
+	}{
+		{"size 0", "0"},
+		{"size 1.5", "1.5"},
+		{"size -0.5", "-0.5"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			uploader := &recordingUploader{}
+			app := newUploadTestApp(&stdout, &stderr, uploader, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+				return &recordingWebPEncoder{}, &recordingAVIFEncoder{}
+			}, nil)
+
+			code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--size", tt.size, t.TempDir()})
+
+			require.Equal(t, 2, code)
+			require.Len(t, uploader.uploads, 0)
+		})
+	}
+}
+
+func Test_upload_size_0_5_happy_path(t *testing.T) {
+	dir := t.TempDir()
+	writePNG(t, dir, "a.png")
+	configPath := writeConfig(t, cfg.Config{CloudName: "demo", APIKey: "key", APISecret: "secret"})
+
+	var stdout, stderr bytes.Buffer
+	uploader := &recordingUploader{}
+	app := newUploadTestApp(&stdout, &stderr, uploader, func() (codec.WebPEncoder, codec.AVIFEncoder) {
+		return &recordingWebPEncoder{}, &recordingAVIFEncoder{}
+	}, nil)
+
+	code := app.Execute(context.Background(), []string{"upload", "--config", configPath, "--size", "0.5", dir})
+
+	require.Equal(t, 0, code)
+	require.Len(t, uploader.uploads, 2)
 }
 
 func Test_upload_bad_flag_values(t *testing.T) {

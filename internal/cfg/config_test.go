@@ -230,3 +230,43 @@ func Test_Redacted_replaces_only_api_secret(t *testing.T) {
 
 	require.Equal(t, cfg.Config{CloudName: "demo", APIKey: "key123", APISecret: "********"}, got)
 }
+
+func Test_Validate_returns_error_wrapping_ErrAPISecretEqualsKey_when_key_equals_secret(t *testing.T) {
+	c := cfg.Config{CloudName: "demo", APIKey: "same-value", APISecret: "same-value"}
+
+	err := c.Validate()
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, cfg.ErrAPISecretEqualsKey)
+	assert.Contains(t, err.Error(), "api_secret must not equal api_key")
+	assert.Contains(t, err.Error(), "Cloudinary console")
+	assert.Contains(t, err.Error(), "Settings > API Keys")
+}
+
+func Test_Validate_returns_nil_when_key_differs_from_secret(t *testing.T) {
+	c := cfg.Config{CloudName: "demo", APIKey: "key123", APISecret: "secret123"}
+
+	require.NoError(t, c.Validate())
+}
+
+func Test_Validate_reports_missing_fields_before_equality_check(t *testing.T) {
+	c := cfg.Config{CloudName: "demo"}
+
+	err := c.Validate()
+
+	require.Error(t, err)
+	var cfgErr *cfg.ConfigError
+	require.ErrorAs(t, err, &cfgErr)
+	assert.Equal(t, []string{"api_key", "api_secret"}, cfgErr.Missing)
+	require.NotErrorIs(t, err, cfg.ErrAPISecretEqualsKey)
+}
+
+func Test_Validate_equality_error_does_not_leak_credential_values(t *testing.T) {
+	leak := "leak-me-credential-12345"
+	c := cfg.Config{CloudName: "demo", APIKey: leak, APISecret: leak}
+
+	err := c.Validate()
+
+	require.Error(t, err)
+	require.NotContains(t, err.Error(), leak)
+}

@@ -40,6 +40,13 @@ func (e *ConfigError) Error() string {
 	return "config: missing required fields: " + strings.Join(e.Missing, ", ")
 }
 
+// ErrAPISecretEqualsKey is wrapped by Validate when api_key and api_secret
+// are both non-empty and equal. The fix is to copy the API Secret — not the
+// API Key — from the Cloudinary console under Settings > API Keys.
+var ErrAPISecretEqualsKey = errors.New(
+	"api_secret must not equal api_key; copy the API Secret (not the API Key) from the Cloudinary console at Settings > API Keys",
+)
+
 // FilePath resolves the config file location. A non-empty override wins;
 // otherwise the default is <user config dir>/cloudinary-cli/config.json.
 func FilePath(override string) (string, error) {
@@ -107,9 +114,11 @@ func MergeEnv(base Config, getenv func(string) string) Config {
 	return base
 }
 
-// Validate returns nil when every field is present; otherwise a
-// *ConfigError listing the missing JSON field names in the stable order
-// cloud_name, api_key, api_secret.
+// Validate returns nil when every field is present and api_key differs from
+// api_secret. If any field is missing it returns a *ConfigError listing the
+// missing JSON field names in the stable order cloud_name, api_key,
+// api_secret; otherwise, if api_key and api_secret are both non-empty and
+// equal, it returns an error wrapping ErrAPISecretEqualsKey.
 func (c Config) Validate() error {
 	var missing []string
 	if c.CloudName == "" {
@@ -121,10 +130,13 @@ func (c Config) Validate() error {
 	if c.APISecret == "" {
 		missing = append(missing, "api_secret")
 	}
-	if len(missing) == 0 {
-		return nil
+	if len(missing) > 0 {
+		return &ConfigError{Missing: missing}
 	}
-	return &ConfigError{Missing: missing}
+	if c.APIKey == c.APISecret {
+		return fmt.Errorf("config: %w", ErrAPISecretEqualsKey)
+	}
+	return nil
 }
 
 // Redacted returns a copy of c with the API secret replaced by
