@@ -71,8 +71,9 @@ func (e *UsageError) Unwrap() error {
 }
 
 // Version is the default version string when App.Version is empty.
-// Release builds override it with -ldflags "-X github.com/anjuls/cloudinary-cli/internal/cli.Version=...".
-const Version = "dev"
+// It is a var (not const) so release builds can override it with
+// -ldflags "-X github.com/anjuls/cloudinary-cli/internal/cli.Version=vX.Y.Z".
+var Version = "dev"
 
 // NewApp returns an App wired to the production dependencies: the process
 // streams, the huh-backed prompter, the SDK uploader constructor, and the
