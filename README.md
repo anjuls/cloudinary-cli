@@ -15,12 +15,34 @@ Optimization happens entirely on your machine before upload. The tool does **not
 
 ## Requirements
 
-- Go 1.25 or newer (to build from source).
 - A Cloudinary account (cloud name, API key, API secret).
+- Go 1.25 or newer — only when building from source (not needed for Homebrew or `go install`).
 
 ## Installation
 
-Build from source in this directory (requires Go 1.25+):
+### Homebrew (macOS / Linux)
+
+```bash
+brew tap anjuls/tap
+brew install cloudinary-cli
+```
+
+New Homebrew versions require trusting the tap first:
+
+```bash
+brew trust anjuls/tap   # or: brew trust --formula anjuls/tap/cloudinary-cli
+brew install cloudinary-cli
+```
+
+### Go
+
+```bash
+go install github.com/anjuls/cloudinary-cli@latest
+```
+
+### From source
+
+Requires Go 1.25+:
 
 ```bash
 go build -o cloudinary-cli .
@@ -34,7 +56,11 @@ go install .          # installs to $(go env GOPATH)/bin
 cloudinary-cli --help
 ```
 
-> Once the module is published, `go install github.com/anjuls/cloudinary-cli@latest` will also work.
+Check the installed version:
+
+```bash
+cloudinary-cli --version
+```
 
 ## Quick start
 
